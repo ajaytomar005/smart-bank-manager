@@ -2,7 +2,12 @@ import axios from 'axios'
 import type { AuthResponse } from '../types/auth'
 import { useAuthStore } from './authStore'
 
-export const apiClient = axios.create({ baseURL: '/api' })
+// In dev, Vite proxies the relative /api path to localhost:8080 (see vite.config.ts).
+// In production, frontend and backend are on different origins, so VITE_API_URL must
+// point at the deployed backend, e.g. https://smart-bank-manager-api.onrender.com/api.
+export const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+
+export const apiClient = axios.create({ baseURL: API_BASE_URL })
 
 apiClient.interceptors.request.use((config) => {
   const token = useAuthStore.getState().accessToken
@@ -19,7 +24,7 @@ async function refreshAccessToken(): Promise<string> {
   if (!refreshToken) {
     throw new Error('No refresh token available')
   }
-  const endpoint = role === 'CUSTOMER' ? '/api/auth/customer/refresh' : '/api/auth/refresh'
+  const endpoint = role === 'CUSTOMER' ? `${API_BASE_URL}/auth/customer/refresh` : `${API_BASE_URL}/auth/refresh`
   const { data } = await axios.post<AuthResponse>(endpoint, { refreshToken })
   useAuthStore.getState().setSession(data)
   return data.accessToken

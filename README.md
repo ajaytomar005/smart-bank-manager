@@ -280,6 +280,65 @@ Customer self-registration is also open from the customer login page.
 
 ---
 
+## Deployment
+
+Recommended free-tier stack: **Render** (backend web service + managed Postgres) + **Vercel** (frontend static build). Redis is optional — it's only used for ATM live-availability caching (`AtmService`) and is connected to lazily, so the app boots and runs fine without it.
+
+### 1. Create the database
+
+- Render dashboard → New → PostgreSQL (free plan). Copy the **Internal Database URL** it gives you (format `postgres://user:pass@host:5432/dbname`).
+- No manual schema step needed — Flyway (`backend/src/main/resources/db/migration`) runs all 9 migrations automatically on backend boot.
+
+### 2. Deploy the backend
+
+- Render dashboard → New → Blueprint → point at this repo's `render.yaml` (or New → Web Service → Docker → `backend/Dockerfile` manually if not using Blueprints).
+- `render.yaml` wires `DATABASE_URL` from the database automatically and generates `JWT_SECRET`. Set the remaining vars listed below in the Render dashboard.
+- Once deployed, note the backend's public URL, e.g. `https://smart-bank-manager-api.onrender.com`.
+
+### 3. Deploy the frontend
+
+- Vercel dashboard → New Project → import this repo → set **Root Directory** to `frontend`.
+- Vercel auto-detects the Vite build (`vercel.json` also pins `npm run build` / `dist`).
+- Set the env var `VITE_API_URL=https://smart-bank-manager-api.onrender.com/api` (include the `/api` context path) in Vercel's project settings, then redeploy.
+
+### 4. Close the loop on CORS
+
+- Once you have the Vercel URL (e.g. `https://smart-bank-manager.vercel.app`), go back to the Render backend's env vars and set `CORS_ALLOWED_ORIGINS=https://smart-bank-manager.vercel.app` (comma-separate if you keep `http://localhost:5173` too), then redeploy the backend.
+
+### Environment variables
+
+**Backend** (`backend/.env.example`):
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` | Yes (prod) | Cloud Postgres connection string; parsed into JDBC url/user/password by `DatabaseUrlEnvironmentPostProcessor` at boot. Falls back to `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` (localhost defaults) if unset. |
+| `JWT_SECRET` | Yes (prod) | Signing key for access/refresh tokens. Must be changed from the dev default in production. |
+| `JWT_ACCESS_EXPIRATION_MS` | No | Access token lifetime, default 15 min. |
+| `JWT_REFRESH_EXPIRATION_MS` | No | Refresh token lifetime, default 7 days. |
+| `LOAN_MANAGER_APPROVAL_THRESHOLD` | No | Business rule cutoff for loan manager approval routing. |
+| `REDIS_HOST` / `REDIS_PORT` | No | Only needed if you want ATM live-availability caching; app runs fine without them. |
+| `KYC_STORAGE_DIR` | No | Where uploaded KYC documents land. **Render's disk is ephemeral** — see Risks below. |
+| `CORS_ALLOWED_ORIGINS` | Yes (prod) | Comma-separated list of frontend origins allowed to call the API. Must include your Vercel URL. |
+| `PORT` | Auto-set by Render | Server listen port; don't set manually. |
+
+**Frontend** (`frontend/.env.example`):
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `VITE_API_URL` | Yes (prod) | Full backend API base URL including `/api`, e.g. `https://smart-bank-manager-api.onrender.com/api`. Not needed locally — Vite proxies `/api` to `localhost:8080` in dev. |
+
+### What will break in production if skipped
+
+- **CORS** — without `CORS_ALLOWED_ORIGINS` set to the real Vercel origin, the browser will block every API call from the deployed frontend (fixed in code, but still needs the env var set per-deploy).
+- **Hardcoded API URL** — the frontend previously assumed same-origin `/api`; on Render+Vercel the two apps have different origins, so `VITE_API_URL` must be set or every request 404s (fixed in `frontend/src/lib/apiClient.ts`, but only takes effect if the env var is actually set at build time).
+- **Hardcoded DB host** — previously assumed `localhost:5432`; now reads `DATABASE_URL` (or `DB_HOST`/etc.) via `DatabaseUrlEnvironmentPostProcessor` (fixed).
+- **JWT secret** — don't deploy with the dev default; `render.yaml` auto-generates one, but double-check it's actually set if you deploy manually.
+- **Ephemeral KYC file storage** — Render's filesystem is wiped on every redeploy/restart. Fine for a demo, but any uploaded KYC documents will be lost. For real use, swap `AccountOpeningDocumentStorage`-style local disk writes for S3/Cloudinary.
+- **No secrets in git** — `.env` is now gitignored in both `backend/` and `frontend/`; only commit `.env.example` files with placeholder values.
+- **Migrations** — Flyway runs automatically on boot against whatever `DATABASE_URL` points at, so there's no separate manual migration step — just make sure `DATABASE_URL` is correct before the first deploy.
+
+---
+
 ## Entry Points & Control Flow
 
 **Backend**: `SmartBankManagerApplication.main()` → Spring Boot autoconfigures → Flyway runs pending migrations on startup → `SecurityFilterChain` (in `SecurityConfig`) intercepts every request → `JwtAuthenticationFilter` populates `SecurityContext` if a valid bearer token is present → `AuthorizationFilter` checks URL-pattern + `@PreAuthorize` rules → `DispatcherServlet` routes to the matching `@RestController` method → controller delegates to a `@Service` → repository → Postgres. Two `@Scheduled` jobs run independently of any request: `AtmOfflineSweepJob` (every 60s) and `NeftSettlementJob` (every 30s).

@@ -1,0 +1,34 @@
+databases:
+  - name: smart-bank-manager-db
+    plan: free
+    databaseName: smart_bank_manager
+    user: smart_bank_app
+
+services:
+  - type: web
+    name: smart-bank-manager-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /api/v3/api-docs
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: smart-bank-manager-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_EXPIRATION_MS
+        value: 900000
+      - key: JWT_REFRESH_EXPIRATION_MS
+        value: 604800000
+      - key: LOAN_MANAGER_APPROVAL_THRESHOLD
+        value: 500000
+      - key: KYC_STORAGE_DIR
+        value: ./data/kyc-documents
+      - key: CORS_ALLOWED_ORIGINS
+        value: http://localhost:5173
+      # Redis is only used for ATM live-availability caching (AtmService) and is connected
+      # to lazily, so the app boots fine without it. Add REDIS_HOST/REDIS_PORT manually in
+      # the Render dashboard (e.g. pointing at Upstash) if you want that feature cached.
